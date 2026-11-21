@@ -1,6 +1,20 @@
 # FlowForge
 
-FlowForge is a Go CLI and PostgreSQL-backed worker for dependency graphs. Submit a JSON workflow, run one or more workers, and inspect every attempt. The alpha has one built-in task handler: it writes a durable receipt keyed by run and task. Task IDs such as `invoice` name steps in the example. Each step runs that same receipt handler.
+FlowForge is a Go CLI and PostgreSQL-backed worker for dependency graphs. Submit a JSON workflow, run workers, and inspect each attempt. The CLI handles receipt tasks. Applications can register their own Go handlers with the public `worker` package.
+
+## Run a CSV import
+
+With Go and a PostgreSQL `DATABASE_URL`, stop any workers from the previous alpha before upgrading. Run the additive migration and restart workers with the new binaries before submitting typed tasks. Existing workflows default to the receipt handler.
+
+```sh
+go run ./cmd/flowforge migrate
+go run ./cmd/flowforge submit examples/import.json
+go run ./examples/import-worker examples/import.csv reports
+```
+
+In another terminal run `go run ./cmd/flowforge status RUN_ID` with the ID printed by submit. The report in `reports/` should contain two rows and a total of eight. To process your own file, pass a CSV with a nonnegative integer quantity column. Workers serving this example queue must use the same immutable input file and shared report directory. Use a filesystem that supports hard links. The worker publishes a complete report under a stable key so replay after a crash produces one report.
+
+To implement another worker, import `github.com/farhatcodes/flowforge-oss/worker` and pass named functions to `worker.Run`. A handler receives a context, JSON input, attempt number, and a stable `Task.Key()` for deduplication. Return an error to enter the retry policy. Workers claim only registered handler names. A task waits until a capable worker is running. The SDK renews leases during execution and cancels the handler context on lease loss or shutdown. Handlers must observe cancellation and make external effects idempotent.
 
 ## Try the planner
 

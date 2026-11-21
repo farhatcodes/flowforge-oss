@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS ff_tasks (
     PRIMARY KEY (run_id,id)
 );
 CREATE INDEX IF NOT EXISTS ff_ready ON ff_tasks (available_at,run_id,id) WHERE state IN ('pending','running');
+ALTER TABLE ff_tasks ADD COLUMN IF NOT EXISTS handler text NOT NULL DEFAULT 'receipt';
+ALTER TABLE ff_tasks ADD COLUMN IF NOT EXISTS input jsonb;
 CREATE TABLE IF NOT EXISTS ff_attempts (
     run_id bigint NOT NULL,
     task text NOT NULL,

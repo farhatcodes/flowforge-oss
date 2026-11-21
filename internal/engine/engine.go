@@ -52,7 +52,7 @@ func Submit(ctx context.Context, db *sql.DB, g workflow.Graph) (int64, error) {
 		return 0, err
 	}
 	for _, t := range g.Tasks {
-		if _, err = tx.ExecContext(ctx, "INSERT INTO ff_tasks(run_id,id,parents) VALUES($1,$2,coalesce($3::text[],'{}'))", run, t.ID, pq.Array(t.DependsOn)); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO ff_tasks(run_id,id,parents,handler,input) VALUES($1,$2,coalesce($3::text[],'{}'),coalesce(nullif($4,''),'receipt'),nullif($5,'')::jsonb)", run, t.ID, pq.Array(t.DependsOn), t.Handler, string(t.Input)); err != nil {
 			return 0, err
 		}
 	}
@@ -60,6 +60,8 @@ func Submit(ctx context.Context, db *sql.DB, g workflow.Graph) (int64, error) {
 }
 
 type Claim struct {
+	Handler string
+	Input   json.RawMessage
 	Run     int64
 	Task    string
 	Attempt int
@@ -68,12 +70,17 @@ type Claim struct {
 const maxAttempts = 3
 
 // A worker locks a single eligible task. Parent successes are terminal.
-const eligible = `SELECT t.run_id,t.id,t.attempt,t.state FROM ff_tasks t
+const eligible = `SELECT t.run_id,t.id,t.attempt,t.state,t.handler,coalesce(t.input,'null'::jsonb) FROM ff_tasks t
  WHERE t.state IN ('running','pending') AND t.available_at<=clock_timestamp()
+ AND t.handler=ANY($1::text[])
  AND NOT EXISTS (SELECT 1 FROM ff_tasks p WHERE p.run_id=t.run_id AND p.id=ANY(t.parents) AND p.state<>'succeeded')
  ORDER BY t.available_at,t.run_id,t.id LIMIT 1 FOR UPDATE OF t SKIP LOCKED`
 
 func Next(ctx context.Context, db *sql.DB, worker string, lease time.Duration) (*Claim, error) {
+	return NextFor(ctx, db, worker, lease, []string{"receipt"})
+}
+
+func NextFor(ctx context.Context, db *sql.DB, worker string, lease time.Duration, handlers []string) (*Claim, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -81,7 +88,9 @@ func Next(ctx context.Context, db *sql.DB, worker string, lease time.Duration) (
 	defer tx.Rollback()
 	var c Claim
 	var state string
-	err = tx.QueryRowContext(ctx, eligible).Scan(&c.Run, &c.Task, &c.Attempt, &state)
+	var input []byte
+	err = tx.QueryRowContext(ctx, eligible, pq.Array(handlers)).Scan(&c.Run, &c.Task, &c.Attempt, &state, &c.Handler, &input)
+	c.Input = input
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -132,6 +141,23 @@ func retry(ctx context.Context, tx *sql.Tx, c Claim, reason string) error {
 
 var ErrStale = errors.New("attempt lease expired or superseded")
 
+func Renew(ctx context.Context, db *sql.DB, c Claim, lease time.Duration) error {
+	result, err := db.ExecContext(ctx, `UPDATE ff_tasks
+ SET available_at=clock_timestamp()+$4 * interval '1 millisecond'
+ WHERE run_id=$1 AND id=$2 AND attempt=$3 AND state='running' AND available_at>clock_timestamp()`, c.Run, c.Task, c.Attempt, lease.Milliseconds())
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return ErrStale
+	}
+	return nil
+}
+
 func Finish(ctx context.Context, db *sql.DB, c Claim, taskErr error) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -175,7 +201,7 @@ func Status(ctx context.Context, db *sql.DB, run int64) (json.RawMessage, error)
 	var result []byte
 	err := db.QueryRowContext(ctx, `SELECT jsonb_build_object('run',run_id,'state',
  CASE WHEN bool_and(state='succeeded') THEN 'succeeded' WHEN bool_or(state IN ('pending','running')) THEN 'active' ELSE 'failed' END,
- 'tasks',jsonb_agg(jsonb_build_object('id',id,'state',state,'reason',reason,'attempts',
+ 'tasks',jsonb_agg(jsonb_build_object('id',id,'handler',handler,'state',state,'reason',reason,'attempts',
  COALESCE((SELECT jsonb_agg(to_jsonb(a)-'run_id'-'task' ORDER BY number) FROM ff_attempts a WHERE a.run_id=t.run_id AND a.task=t.id),'[]'::jsonb)) ORDER BY id))
  FROM ff_tasks t WHERE run_id=$1 GROUP BY run_id`, run).Scan(&result)
 	if errors.Is(err, sql.ErrNoRows) {
