@@ -1,0 +1,33 @@
+name: Pull request authorship
+on:
+  pull_request_target:
+    types: [opened, reopened, edited, synchronize, ready_for_review]
+permissions:
+  pull-requests: read
+jobs:
+  authorship:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify pull request and commit authors
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const ownerId = 351544625; // farhatcodes
+            const hasCredit = text => /^[ \t]*co-authored-by[ \t]*:/im.test(text || '');
+            if (pr.user.id !== ownerId || hasCredit(pr.body)) {
+              core.setFailed('Open the PR as farhatcodes and omit co-author trailers.');
+              return;
+            }
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              ...context.repo, pull_number: pr.number, per_page: 100
+            });
+            if (commits.length !== pr.commits) {
+              core.setFailed('Could not verify every commit in this pull request.');
+              return;
+            }
+            for (const entry of commits) {
+              if (entry.author?.id !== ownerId || hasCredit(entry.commit.message)) {
+                core.setFailed('Check authorship for commit ' + entry.sha);
+              }
+            }
