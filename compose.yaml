@@ -1,0 +1,23 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: flowforge
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+  cli:
+    build: .
+    environment:
+      DATABASE_URL: postgres://postgres:flowforge@db/postgres?sslmode=disable
+    volumes:
+      - ./examples:/examples:ro
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  pgdata: {}

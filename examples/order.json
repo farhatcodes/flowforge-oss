@@ -1,0 +1,8 @@
+{
+  "tasks": [
+    {"id": "validate"},
+    {"id": "invoice", "depends_on": ["validate"]},
+    {"id": "reserve", "depends_on": ["validate"]},
+    {"id": "notify", "depends_on": ["invoice", "reserve"]}
+  ]
+}
